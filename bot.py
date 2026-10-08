@@ -1,28 +1,36 @@
 import os
-import base64
 import telebot
-from groq import Groq
+import google.generativeai as genai
+from PIL import Image
+from io import BytesIO
 from gtts import gTTS
 from duckduckgo_search import DDGS
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-client = Groq(api_key=GROQ_API_KEY)
 
-user_history = {}
+# Google Gemini API sozlamalari
+genai.configure(api_key=GEMINI_API_KEY)
+
+SYSTEM_PROMPT = (
+    "Siz aqlli va do'stona yordamchisiz. Siz foydalanuvchining savollariga "
+    "aniq va tushunarli javob berasiz. Javoblaringiz qisqa bo'ladi, agar "
+    "foydalanuvchi sizdan to'liq javobini so'rasa, siz unga aniq ma'lumotlar "
+    "va misollar bilan tushuntirib berasiz."
+)
+
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction=SYSTEM_PROMPT
+)
+
+# Har bir foydalanuvchi uchun chat sessiyasini saqlash
+user_chats = {}
 unique_users = set()
 total_messages = 0
 
-SYSTEM_PROMPT = (
-    "Siz aqlli va do'stona AI yordamchisiz. Foydalanuvchining savollariga "
-    "o'zbek tilida aniq, tushunarli va qisqa javob berasiz. Sizga internetdan "
-    "ma'lumotlar berilsa, ushbu ma'lumotlar asosida foydalanuvchiga eng yangi "
-    "javobni tayyorlab berasiz."
-)
-
-# Internetdan qidiruv funksiyasi (xatolik bermaydigan qilib)
 def search_web(query):
     try:
         results = DDGS().text(query, max_results=3)
@@ -30,16 +38,15 @@ def search_web(query):
             context = "\n".join([f"- {r.get('title', '')}: {r.get('body', '')}" for r in results])
             return context
     except Exception as e:
-        print(f"Qidiruvda xatolik yuz berdi: {e}")
+        print(f"Qidiruvda xatolik: {e}")
     return None
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     unique_users.add(message.from_user.id)
     welcome_text = (
-        "Salom! Men sizning aqlli yordamchingizman. 🤖\n\n"
-        "Menga xohlagan savolingizni berishingiz, rasm yuborishingiz yoki "
-        "internetdan ma'lumot qidirishni so'rashingiz mumkin!"
+        "Salom! Men Google Gemini asosida ishlaydigan aqlli yordamchingizman. 🤖\n\n"
+        "Menga matn yuborishingiz, rasm jo'natishingiz yoki internetdan ma'lumot qidirishni so'rashingiz mumkin!"
     )
     bot.reply_to(message, welcome_text)
 
@@ -61,7 +68,7 @@ def handle_text(message):
     unique_users.add(user_id)
     total_messages += 1
 
-    # Kalit so'zlar bo'lsa yoki aniq narsa so'ralsa internetdan qidiradi
+    # Internetdan qidiruv tekshiruvi
     search_keywords = ["qidir", "yangilik", "ob-havo", "bugun", "kurs", "internet", "ma'lumot"]
     needs_search = any(keyword in user_text.lower() for keyword in search_keywords)
 
@@ -70,27 +77,16 @@ def handle_text(message):
         bot.send_chat_action(message.chat.id, 'typing')
         search_result = search_web(user_text)
         if search_result:
-            web_context = f"\n\n[Internetdan olingan eng so'nggi ma'lumotlar]:\n{search_result}"
+            web_context = f"\n\n[Internetdan olingan so'nggi ma'lumotlar]:\n{search_result}"
 
-    if user_id not in user_history:
-        user_history[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    full_prompt = user_text + web_context
-    user_history[user_id].append({"role": "user", "content": full_prompt})
-
-    if len(user_history[user_id]) > 11:
-        user_history[user_id] = [user_history[user_id][0]] + user_history[user_id][-10:]
+    # Gemini Chat xotirasini boshqarish
+    if user_id not in user_chats:
+        user_chats[user_id] = model.start_chat(history=[])
 
     try:
-        # Eng barqaror Groq modeliga o'tkazdik
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=user_history[user_id]
-        )
-        bot_reply = response.choices[0].message.content
-        user_history[user_id].append({"role": "assistant", "content": bot_reply})
-
-        bot.reply_to(message, bot_reply)
+        chat = user_chats[user_id]
+        response = chat.send_message(user_text + web_context)
+        bot.reply_to(message, response.text)
     except Exception as e:
         bot.reply_to(message, f"Xatolik yuz berdi: {e}")
 
@@ -101,28 +97,17 @@ def handle_photo(message):
     total_messages += 1
 
     try:
+        bot.send_chat_action(message.chat.id, 'typing')
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        base64_image = base64.b64encode(downloaded_file).decode('utf-8')
         
+        # Rasmni PIL yordamida ochish
+        image = Image.open(BytesIO(downloaded_file))
         caption = message.caption if message.caption else "Ushbu rasmni tahlil qiling va qisqa ta'rif bering."
 
-        response = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": caption},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                        }
-                    ]
-                }
-            ]
-        )
-        bot.reply_to(message, response.choices[0].message.content)
+        # Gemini modeliga matn va rasmni birga yuborish
+        response = model.generate_content([caption, image])
+        bot.reply_to(message, response.text)
     except Exception as e:
         bot.reply_to(message, f"Rasmni tahlil qilishda xatolik: {e}")
 
@@ -133,44 +118,9 @@ def handle_voice(message):
     total_messages += 1
 
     try:
-        file_info = bot.get_file(message.voice.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        
-        voice_filename = "user_voice.ogg"
-        with open(voice_filename, 'wb') as f:
-            f.write(downloaded_file)
-
-        with open(voice_filename, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-large-v3",
-                file=audio_file,
-                response_format="text"
-            )
-
-        if os.path.exists(voice_filename):
-            os.remove(voice_filename)
-
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": transcription}
-            ]
-        )
-        bot_reply = response.choices[0].message.content
-
-        tts = gTTS(text=bot_reply, lang='uz')
-        reply_voice_path = "reply_voice.ogg"
-        tts.save(reply_voice_path)
-
-        with open(reply_voice_path, 'rb') as voice:
-            bot.send_voice(message.chat.id, voice, caption=f"💬 **Tushunilgan matn:** {transcription}")
-
-        if os.path.exists(reply_voice_path):
-            os.remove(reply_voice_path)
-
+        bot.reply_to(message, "Ovozli xabarlarni matnga o'girish uchun Gemini matnli so'rovlar bilan birga ishlaydi. Iltimos, xabaringizni matn ko'rinishida yuboring.")
     except Exception as e:
-        bot.reply_to(message, f"Ovozli xabarni qayta ishlashda xatolik: {e}")
+        bot.reply_to(message, f"Xatolik: {e}")
 
 if __name__ == "__main__":
     bot.remove_webhook()

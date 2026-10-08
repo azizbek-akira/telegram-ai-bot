@@ -45,7 +45,7 @@ async def analyze_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=status_msg.message_id,
-            text="❌ Tahlil jarayonida xatolik yuz berdi."
+            text=f"❌Xatolik turi:{e}"
         )
 
 async def process_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -3,7 +3,6 @@ import telebot
 import google.generativeai as genai
 from PIL import Image
 from io import BytesIO
-from gtts import gTTS
 from duckduckgo_search import DDGS
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -11,22 +10,13 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# Google Gemini API sozlamalari
+# Google Gemini API sozlamasi
 genai.configure(api_key=GEMINI_API_KEY)
 
-SYSTEM_PROMPT = (
-    "Siz aqlli va do'stona yordamchisiz. Siz foydalanuvchining savollariga "
-    "aniq va tushunarli javob berasiz. Javoblaringiz qisqa bo'ladi, agar "
-    "foydalanuvchi sizdan to'liq javobini so'rasa, siz unga aniq ma'lumotlar "
-    "va misollar bilan tushuntirib berasiz."
-)
+# Aniq va barqaror ishlaydigan Gemini modeli
+model = genai.GenerativeModel('gemini-pro')
+vision_model = genai.GenerativeModel('gemini-pro-vision')
 
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    system_instruction=SYSTEM_PROMPT
-)
-
-# Har bir foydalanuvchi uchun chat sessiyasini saqlash
 user_chats = {}
 unique_users = set()
 total_messages = 0
@@ -45,8 +35,8 @@ def search_web(query):
 def send_welcome(message):
     unique_users.add(message.from_user.id)
     welcome_text = (
-        "Salom! Men Google Gemini asosida ishlaydigan aqlli yordamchingizman. 🤖\n\n"
-        "Menga matn yuborishingiz, rasm jo'natishingiz yoki internetdan ma'lumot qidirishni so'rashingiz mumkin!"
+        "Salom! Men Google Gemini AI asosida ishlaydigan yordamchingizman. 🤖\n\n"
+        "Menga savollaringizni yuborishingiz yoki internetdan ma'lumot qidirishni so'rashingiz mumkin!"
     )
     bot.reply_to(message, welcome_text)
 
@@ -68,7 +58,6 @@ def handle_text(message):
     unique_users.add(user_id)
     total_messages += 1
 
-    # Internetdan qidiruv tekshiruvi
     search_keywords = ["qidir", "yangilik", "ob-havo", "bugun", "kurs", "internet", "ma'lumot"]
     needs_search = any(keyword in user_text.lower() for keyword in search_keywords)
 
@@ -77,9 +66,8 @@ def handle_text(message):
         bot.send_chat_action(message.chat.id, 'typing')
         search_result = search_web(user_text)
         if search_result:
-            web_context = f"\n\n[Internetdan olingan so'nggi ma'lumotlar]:\n{search_result}"
+            web_context = f"\n\n[Internetdan topilgan so'nggi ma'lumotlar]:\n{search_result}"
 
-    # Gemini Chat xotirasini boshqarish
     if user_id not in user_chats:
         user_chats[user_id] = model.start_chat(history=[])
 
@@ -101,26 +89,13 @@ def handle_photo(message):
         file_info = bot.get_file(message.photo[-1].file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # Rasmni PIL yordamida ochish
         image = Image.open(BytesIO(downloaded_file))
-        caption = message.caption if message.caption else "Ushbu rasmni tahlil qiling va qisqa ta'rif bering."
+        caption = message.caption if message.caption else "Ushbu rasmni tahlil qiling."
 
-        # Gemini modeliga matn va rasmni birga yuborish
-        response = model.generate_content([caption, image])
+        response = vision_model.generate_content([caption, image])
         bot.reply_to(message, response.text)
     except Exception as e:
         bot.reply_to(message, f"Rasmni tahlil qilishda xatolik: {e}")
-
-@bot.message_handler(content_types=['voice'])
-def handle_voice(message):
-    global total_messages
-    unique_users.add(message.from_user.id)
-    total_messages += 1
-
-    try:
-        bot.reply_to(message, "Ovozli xabarlarni matnga o'girish uchun Gemini matnli so'rovlar bilan birga ishlaydi. Iltimos, xabaringizni matn ko'rinishida yuboring.")
-    except Exception as e:
-        bot.reply_to(message, f"Xatolik: {e}")
 
 if __name__ == "__main__":
     bot.remove_webhook()

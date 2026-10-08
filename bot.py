@@ -1,51 +1,45 @@
 import os
 import base64
-from io import BytesIO
 import telebot
 from groq import Groq
 from gtts import gTTS
 from duckduckgo_search import DDGS
 
-# Environment o'zgaruvchilarini olish
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 client = Groq(api_key=GROQ_API_KEY)
 
-# Global o'zgaruvchilar
 user_history = {}
 unique_users = set()
 total_messages = 0
 
 SYSTEM_PROMPT = (
-    "Siz aqlli va do'stona yordamchisiz. Siz foydalanuvchining savollariga "
-    "aniq va tushunarli javob berasiz. Javoblaringiz qisqa bo'ladi, agar "
-    "foydalanuvchi sizdan to'liq javobini so'rasa, siz unga aniq ma'lumotlar "
-    "va misollar bilan tushuntirib berasiz."
+    "Siz aqlli va do'stona AI yordamchisiz. Foydalanuvchining savollariga "
+    "o'zbek tilida aniq, tushunarli va qisqa javob berasiz. Sizga internetdan "
+    "ma'lumotlar berilsa, ushbu ma'lumotlar asosida foydalanuvchiga eng yangi "
+    "javobni tayyorlab berasiz."
 )
 
-# Internetdan qidirish funksiyasi
+# Internetdan qidiruv funksiyasi (xatolik bermaydigan qilib)
 def search_web(query):
     try:
         results = DDGS().text(query, max_results=3)
         if results:
-            context = "\n".join([f"- {r['title']}: {r['body']}" for r in results])
+            context = "\n".join([f"- {r.get('title', '')}: {r.get('body', '')}" for r in results])
             return context
     except Exception as e:
-        print(f"Qidiruvda xatolik: {e}")
+        print(f"Qidiruvda xatolik yuz berdi: {e}")
     return None
 
-# -------------------------------------------------------------
-# 1. /start va /stats Buyruqlari
-# -------------------------------------------------------------
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     unique_users.add(message.from_user.id)
     welcome_text = (
         "Salom! Men sizning aqlli yordamchingizman. 🤖\n\n"
-        "Menga matn yuborishingiz, rasm jo'natishingiz, ovozli xabar berishingiz "
-        "yoki internetdan ma'lumot qidirishni so'rashingiz mumkin!"
+        "Menga xohlagan savolingizni berishingiz, rasm yuborishingiz yoki "
+        "internetdan ma'lumot qidirishni so'rashingiz mumkin!"
     )
     bot.reply_to(message, welcome_text)
 
@@ -58,9 +52,6 @@ def show_stats(message):
     )
     bot.reply_to(message, stats_text, parse_mode="Markdown")
 
-# -------------------------------------------------------------
-# 2. Matnli Xabarlar va Internet Qidiruvi
-# -------------------------------------------------------------
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
     global total_messages
@@ -70,29 +61,30 @@ def handle_text(message):
     unique_users.add(user_id)
     total_messages += 1
 
-    # Internetdan qidirish kerakligini aniqlash
-    search_keywords = ["qidir", "yangilik", "kim", "nima", "ob-havo", "kurs", "bugun", "internetdan"]
+    # Kalit so'zlar bo'lsa yoki aniq narsa so'ralsa internetdan qidiradi
+    search_keywords = ["qidir", "yangilik", "ob-havo", "bugun", "kurs", "internet", "ma'lumot"]
     needs_search = any(keyword in user_text.lower() for keyword in search_keywords)
 
     web_context = ""
     if needs_search:
+        bot.send_chat_action(message.chat.id, 'typing')
         search_result = search_web(user_text)
         if search_result:
-            web_context = f"\n\n[Internetdan topilgan ma'lumotlar]:\n{search_result}"
+            web_context = f"\n\n[Internetdan olingan eng so'nggi ma'lumotlar]:\n{search_result}"
 
-    # Foydalanuvchi xotirasini yaratish
     if user_id not in user_history:
         user_history[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    prompt_content = user_text + web_context
-    user_history[user_id].append({"role": "user", "content": prompt_content})
+    full_prompt = user_text + web_context
+    user_history[user_id].append({"role": "user", "content": full_prompt})
 
     if len(user_history[user_id]) > 11:
         user_history[user_id] = [user_history[user_id][0]] + user_history[user_id][-10:]
 
     try:
+        # Eng barqaror Groq modeliga o'tkazdik
         response = client.chat.completions.create(
-            model="openai/gpt-oss-20b",
+            model="llama-3.3-70b-versatile",
             messages=user_history[user_id]
         )
         bot_reply = response.choices[0].message.content
@@ -102,9 +94,6 @@ def handle_text(message):
     except Exception as e:
         bot.reply_to(message, f"Xatolik yuz berdi: {e}")
 
-# -------------------------------------------------------------
-# 3. Rasmlarni Tahlil Qilish (Vision AI)
-# -------------------------------------------------------------
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
     global total_messages
@@ -137,9 +126,6 @@ def handle_photo(message):
     except Exception as e:
         bot.reply_to(message, f"Rasmni tahlil qilishda xatolik: {e}")
 
-# -------------------------------------------------------------
-# 4. Ovozli Xabar Va Ovozli Javob Qaytarish (Text-to-Speech)
-# -------------------------------------------------------------
 @bot.message_handler(content_types=['voice'])
 def handle_voice(message):
     global total_messages
@@ -165,7 +151,7 @@ def handle_voice(message):
             os.remove(voice_filename)
 
         response = client.chat.completions.create(
-            model="openai/gpt-oss-20b",
+            model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": transcription}
@@ -186,7 +172,6 @@ def handle_voice(message):
     except Exception as e:
         bot.reply_to(message, f"Ovozli xabarni qayta ishlashda xatolik: {e}")
 
-# Botni ishga tushirish
 if __name__ == "__main__":
     bot.remove_webhook()
     bot.infinity_polling(skip_pending=True)

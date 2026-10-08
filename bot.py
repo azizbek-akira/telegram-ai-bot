@@ -23,7 +23,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def analyze_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
-    status_msg = await update.message.reply_text("⚡ Llama 3.3 tahlil qilmoqda...")
+    status_msg = await update.message.reply_text("⚡ Llama 3.1 tahlil qilmoqda...")
 
     try:
         chat_completion = groq_client.chat.completions.create(
@@ -31,7 +31,7 @@ async def analyze_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"role": "system", "content": "Siz AI ekspertsiz. Yuborilgan matnni o'zbek tilida, aniq va loqonda tahlil qiling."},
                 {"role": "user", "content": user_text}
             ],
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             temperature=0.6,
         )
 
@@ -45,7 +45,7 @@ async def analyze_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.edit_message_text(
             chat_id=update.effective_chat.id,
             message_id=status_msg.message_id,
-            text=f"❌Xatolik turi:{e}"
+            text="❌Tahlil qilishda xatolik yuz berdi. Iltimos, qayta urinib ko'ring."
         )
 
 async def process_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,7 +78,7 @@ async def process_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"role": "system", "content": "Audio matnini tahlil qiling va asosiy mazmunini chiqarib bering."},
                 {"role": "user", "content": transcribed_text}
             ],
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             temperature=0.6,
         )
 

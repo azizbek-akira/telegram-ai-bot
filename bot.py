@@ -83,7 +83,7 @@ def handle_text(message):
 
     try:
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-ost-20b",
             messages=user_history[user_id]
         )
         bot_reply = response.choices[0].message.content
@@ -109,7 +109,7 @@ def handle_photo(message):
         caption = message.caption if message.caption else "Ushbu rasmni tahlil qiling va ta'riflab bering."
 
         response = client.chat.completions.create(
-            model="llama-3.2-11b-vision-preview",
+            model="openai/gpt-ost-20b",
             messages=[
                 {
                     "role": "user",
@@ -156,7 +156,7 @@ def handle_voice(message):
 
         # AI matnli javob tayyorlaydi
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-ost-20b",
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": transcription}

@@ -1,108 +1,172 @@
 import os
-import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import base64
+from io import BytesIO
+import telebot
 from groq import Groq
+from gtts import gTTS
 
-# Serverdagi sozlamalardan kalitlarni o'qish
+# Environment o'zgaruvchilarini olish
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+client = Groq(api_key=GROQ_API_KEY)
+
+# Global o'zgaruvchilar (Statistika va Suhbat xotirasi uchun)
+user_history = {}
+unique_users = set()
+total_messages = 0
+
+SYSTEM_PROMPT = (
+    "Siz aqlli va do'stona yordamchisiz. Siz foydalanuvchining savollariga "
+    "aniq va tushunarli javob berasiz. Javoblaringiz qisqa bo'ladi, agar "
+    "foydalanuvchi sizdan to'liq javobini so'rasa, siz unga aniq ma'lumotlar "
+    "va misollar bilan tushuntirib berasiz."
 )
 
-groq_client = Groq(api_key=GROQ_API_KEY)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Salom! Menga matn, ovozli xabar yoki audio fayl yuboring. "
-        "Groq AI va Whisper uni zudlik bilan tahlil qilib beradi!"
+# -------------------------------------------------------------
+# 1. /start va /stats Buyruqlari (Statistika funksiyasi)
+# -------------------------------------------------------------
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    unique_users.add(message.from_user.id)
+    welcome_text = (
+        "Salom! Men sizning aqlli yordamchingizman. 🤖\n\n"
+        "Menga matn yuborishingiz, rasm jo'natishingiz yoki ovozli xabar berishingiz mumkin!"
     )
+    bot.reply_to(message, welcome_text)
 
-async def analyze_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    status_msg = await update.message.reply_text("⚡ Llama 3.1 tahlil qilmoqda...")
+@bot.message_handler(commands=['stats'])
+def show_stats(message):
+    stats_text = (
+        "📊 **Bot Statistikasi:**\n\n"
+        f"👤 Jami foydalanuvchilar: {len(unique_users)}\n"
+        f"💬 Jami qayta ishlangan xabarlar: {total_messages}"
+    )
+    bot.reply_to(message, stats_text, parse_mode="Markdown")
+
+# -------------------------------------------------------------
+# 2. Matnli Xabarlar va Suhbat Xotirasi (Context Memory)
+# -------------------------------------------------------------
+@bot.message_handler(content_types=['text'])
+def handle_text(message):
+    global total_messages
+    user_id = message.from_user.id
+    user_text = message.text
+
+    unique_users.add(user_id)
+    total_messages += 1
+
+    # Foydalanuvchi xotirasini yaratish
+    if user_id not in user_history:
+        user_history[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    user_history[user_id].append({"role": "user", "content": user_text})
+
+    # Xotirani oxirgi 10 ta xabar bilan cheklash
+    if len(user_history[user_id]) > 11:
+        user_history[user_id] = [user_history[user_id][0]] + user_history[user_id][-10:]
 
     try:
-        chat_completion = groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": "Siz aqlli va dostona yordamchisiz.Siz foydalanuvchining savollariga aniq va tushunarli javob berasiz.javoblaringiz qisqa boladi, agar foydalanuvchi sizdan toliq javobini so'rasa,siz unga aniq malumotlar va misollar bilan tushuntirib berasiz."},
-                {"role": "user", "content": user_text}
-            ],
+        response = client.chat.completions.create(
             model="openai/gpt-oss-20b",
-            temperature=0.6,
+            messages=user_history[user_id]
         )
+        bot_reply = response.choices[0].message.content
+        user_history[user_id].append({"role": "assistant", "content": bot_reply})
 
-        ai_response = chat_completion.choices[0].message.content
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=status_msg.message_id,
-            text=ai_response
-        )
+        bot.reply_to(message, bot_reply)
     except Exception as e:
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=status_msg.message_id,
-            text=f"❌xatolik turi:{e}"
-        )
+        bot.reply_to(message, f"Xatolik yuz berdi: {e}")
 
-async def process_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    status_msg = await update.message.reply_text("🎙 Audio qabul qilindi. Matnga o'girilmoqda...")
-    file_path = "temp_voice.ogg"
+# -------------------------------------------------------------
+# 3. Rasmlarni Tahlil Qilish (Vision AI)
+# -------------------------------------------------------------
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    global total_messages
+    unique_users.add(message.from_user.id)
+    total_messages += 1
 
     try:
-        voice_or_audio = update.message.voice or update.message.audio
-        telegram_file = await context.bot.get_file(voice_or_audio.file_id)
-        await telegram_file.download_to_drive(file_path)
+        file_info = bot.get_file(message.photo[-1].file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        base64_image = base64.b64encode(downloaded_file).decode('utf-8')
+        
+        caption = message.caption if message.caption else "Ushbu rasmni tahlil qiling va qisqa ta'rif bering."
 
-        with open(file_path, "rb") as audio_file:
-            transcription = groq_client.audio.transcriptions.create(
-                file=(file_path, audio_file.read()),
+        response = client.chat.completions.create(
+            model="llama-3.2-11b-vision-preview",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": caption},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                        }
+                    ]
+                }
+            ]
+        )
+        bot.reply_to(message, response.choices[0].message.content)
+    except Exception as e:
+        bot.reply_to(message, f"Rasmni tahlil qilishda xatolik: {e}")
+
+# -------------------------------------------------------------
+# 4. Ovozli Xabar Va Ovozli Javob Qaytarish (Text-to-Speech)
+# -------------------------------------------------------------
+@bot.message_handler(content_types=['voice'])
+def handle_voice(message):
+    global total_messages
+    unique_users.add(message.from_user.id)
+    total_messages += 1
+
+    try:
+        # Ovozli xabarni yuklab olish
+        file_info = bot.get_file(message.voice.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        voice_filename = "user_voice.ogg"
+        with open(voice_filename, 'wb') as f:
+            f.write(downloaded_file)
+
+        # Groq Whisper orqali ovozni matnga o'girish
+        with open(voice_filename, "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(
                 model="whisper-large-v3",
-                prompt="O'zbek tilidagi audio",
+                file=audio_file,
                 response_format="text"
             )
 
-        transcribed_text = str(transcription).strip()
+        if os.path.exists(voice_filename):
+            os.remove(voice_filename)
 
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=status_msg.message_id,
-            text=f"📝 Matn:\n_{transcribed_text}_\n\n⚡ Tahlil qilinmoqda..."
-        )
-
-        chat_completion = groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": "Audio matnini tahlil qiling va asosiy mazmunini chiqarib bering."},
-                {"role": "user", "content": transcribed_text}
-            ],
+        # Matnli javob tayyorlash
+        response = client.chat.completions.create(
             model="openai/gpt-oss-20b",
-            temperature=0.6,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": transcription}
+            ]
         )
+        bot_reply = response.choices[0].message.content
 
-        analysis = chat_completion.choices[0].message.content
-        final_text = f"🎯 Transkripsiya:\n{transcribed_text}\n\n📊 Tahlil:\n{analysis}"
+        # Javobni gTTS orqali ovozga o'girib yuborish
+        tts = gTTS(text=bot_reply, lang='uz')
+        reply_voice_path = "reply_voice.ogg"
+        tts.save(reply_voice_path)
 
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=status_msg.message_id,
-            text=final_text
-        )
+        with open(reply_voice_path, 'rb') as voice:
+            bot.send_voice(message.chat.id, voice, caption=f"💬 **Tushunilgan matn:** {transcription}")
+
+        if os.path.exists(reply_voice_path):
+            os.remove(reply_voice_path)
 
     except Exception as e:
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=status_msg.message_id,
-            text="❌ Audioni qayta ishlashda xatolik yuz berdi."
-        )
-    finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-if __name__ == '__main__':
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze_text))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, process_voice))
-    app.run_polling()
+        bot.reply_to(message, f"Ovozli xabarni qayta ishlashda xatolik: {e}")
+
+# Botni ishga tushirish
+if __name__ == "__main__":
+    bot.infinity_polling()

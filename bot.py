@@ -31,7 +31,7 @@ async def analyze_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"role": "system", "content": "Siz AI ekspertsiz. Yuborilgan matnni o'zbek tilida, aniq va loqonda tahlil qiling."},
                 {"role": "user", "content": user_text}
             ],
-            model="llama-3.1-8b-instant",
+            model="qwen/qwen3.6-27b",
             temperature=0.6,
         )
 
@@ -78,7 +78,7 @@ async def process_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 {"role": "system", "content": "Audio matnini tahlil qiling va asosiy mazmunini chiqarib bering."},
                 {"role": "user", "content": transcribed_text}
             ],
-            model="llama-3.1-8b-instant",
+            model="qwen/qwen3.6-27b",
             temperature=0.6,
         )
 

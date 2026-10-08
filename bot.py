@@ -28,7 +28,7 @@ async def analyze_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat_completion = groq_client.chat.completions.create(
             messages=[
-                {"role": "system", "content": "Siz AI ekspertsiz. Yuborilgan matnni o'zbek tilida, aniq va loqonda tahlil qiling."},
+                {"role": "system", "content": "Siz aqlli va dostona yordamchisiz.Siz foydalanuvchining savollariga aniq va tushunarli javob berasiz.javoblaringiz qisqa boladi, agar foydalanuvchi sizdan toliq javobini so'rasa,siz unga aniq malumotlar va misollar bilan tushuntirib berasiz."},
                 {"role": "user", "content": user_text}
             ],
             model="openai/gpt-oss-20b",

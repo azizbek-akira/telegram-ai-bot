@@ -13,9 +13,8 @@ bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 # Google Gemini API sozlamasi
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Aniq va barqaror ishlaydigan Gemini modeli
-model = genai.GenerativeModel('gemini-pro')
-vision_model = genai.GenerativeModel('gemini-pro-vision')
+# Hozirgi kunda eng barqaror va rasmiy model nomi:
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 user_chats = {}
 unique_users = set()
@@ -36,7 +35,8 @@ def send_welcome(message):
     unique_users.add(message.from_user.id)
     welcome_text = (
         "Salom! Men Google Gemini AI asosida ishlaydigan yordamchingizman. 🤖\n\n"
-        "Menga savollaringizni yuborishingiz yoki internetdan ma'lumot qidirishni so'rashingiz mumkin!"
+        "Menga savollaringizni yuborishingiz, rasm jo'natishingiz yoki "
+        "internetdan ma'lumot qidirishni so'rashingiz mumkin!"
     )
     bot.reply_to(message, welcome_text)
 
@@ -66,7 +66,7 @@ def handle_text(message):
         bot.send_chat_action(message.chat.id, 'typing')
         search_result = search_web(user_text)
         if search_result:
-            web_context = f"\n\n[Internetdan topilgan so'nggi ma'lumotlar]:\n{search_result}"
+            web_context = f"\n\n[Internetdan topilgan ma'lumotlar]:\n{search_result}"
 
     if user_id not in user_chats:
         user_chats[user_id] = model.start_chat(history=[])
@@ -76,7 +76,13 @@ def handle_text(message):
         response = chat.send_message(user_text + web_context)
         bot.reply_to(message, response.text)
     except Exception as e:
-        bot.reply_to(message, f"Xatolik yuz berdi: {e}")
+        # Garov tariqasida model nomini avtomatik almashtirish usuli
+        try:
+            fallback_model = genai.GenerativeModel('gemini-1.5-pro')
+            res = fallback_model.generate_content(user_text + web_context)
+            bot.reply_to(message, res.text)
+        except Exception as err:
+            bot.reply_to(message, f"Xatolik yuz berdi: {err}")
 
 @bot.message_handler(content_types=['photo'])
 def handle_photo(message):
@@ -90,9 +96,9 @@ def handle_photo(message):
         downloaded_file = bot.download_file(file_info.file_path)
         
         image = Image.open(BytesIO(downloaded_file))
-        caption = message.caption if message.caption else "Ushbu rasmni tahlil qiling."
+        caption = message.caption if message.caption else "Ushbu rasmni tahlil qiling va qisqa ta'rif bering."
 
-        response = vision_model.generate_content([caption, image])
+        response = model.generate_content([caption, image])
         bot.reply_to(message, response.text)
     except Exception as e:
         bot.reply_to(message, f"Rasmni tahlil qilishda xatolik: {e}")

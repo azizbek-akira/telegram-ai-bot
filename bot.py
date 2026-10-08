@@ -1,183 +1,108 @@
 import os
-import base64
-import telebot
+import logging
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from groq import Groq
-from gtts import gTTS
-from duckduckgo_search import DDGS
 
+# Serverdagi sozlamalardan kalitlarni o'qish
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-client = Groq(api_key=GROQ_API_KEY)
-
-user_history = {}
-unique_users = set()
-total_messages = 0
-
-SYSTEM_PROMPT = (
-    "Siz aqlli va do'stona yordamchisiz. Foydalanuvchi savollariga "
-    "o'zbek tilida aniq, tushunarli va qisqa javob berishingiz kerak."
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 
-def search_web(query):
-    try:
-        results = DDGS().text(query, max_results=3)
-        if results:
-            return "\n".join([f"- {r.get('title', '')}: {r.get('body', '')}" for r in results])
-    except Exception as e:
-        print(f"Qidiruvda xatolik: {e}")
-    return None
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-# 1. /start va /stats buyruqlari
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    unique_users.add(message.from_user.id)
-    welcome_text = (
-        "Salom! Men sizning multi-funksional AI yordamchingizman. 🤖\n\n"
-        "• Matnli xabarlar va suhbat xotirasi\n"
-        "• Rasmlarni tahlil qilish\n"
-        "• Ovozli xabarlarga ovozli javob qaytarish\n"
-        "• Internetdan ma'lumot qidirish\n"
-        "• /stats buyrug'i orqali statistika"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Salom! Menga matn, ovozli xabar yoki audio fayl yuboring. "
+        "Groq AI va Whisper uni zudlik bilan tahlil qilib beradi!"
     )
-    bot.reply_to(message, welcome_text)
 
-@bot.message_handler(commands=['stats'])
-def show_stats(message):
-    stats_text = (
-        "📊 **Bot Statistikasi:**\n\n"
-        f"👤 Jami foydalanuvchilar: {len(unique_users)}\n"
-        f"💬 Jami qayta ishlangan xabarlar: {total_messages}"
-    )
-    bot.reply_to(message, stats_text, parse_mode="Markdown")
-
-# 2. Matnli xabarlar va suhbat xotirasi (Internet qidiruvi bilan)
-@bot.message_handler(content_types=['text'])
-def handle_text(message):
-    global total_messages
-    user_id = message.from_user.id
-    user_text = message.text
-
-    unique_users.add(user_id)
-    total_messages += 1
-
-    search_keywords = ["qidir", "yangilik", "ob-havo", "bugun", "kurs", "internet", "ma'lumot"]
-    needs_search = any(keyword in user_text.lower() for keyword in search_keywords)
-
-    web_context = ""
-    if needs_search:
-        bot.send_chat_action(message.chat.id, 'typing')
-        search_result = search_web(user_text)
-        if search_result:
-            web_context = f"\n\n[Internetdan topilgan so'nggi ma'lumotlar]:\n{search_result}"
-
-    if user_id not in user_history:
-        user_history[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    full_prompt = user_text + web_context
-    user_history[user_id].append({"role": "user", "content": full_prompt})
-
-    if len(user_history[user_id]) > 11:
-        user_history[user_id] = [user_history[user_id][0]] + user_history[user_id][-10:]
+async def analyze_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
+    status_msg = await update.message.reply_text("⚡ Llama 3.1 tahlil qilmoqda...")
 
     try:
-        response = client.chat.completions.create(
-            model="openai/gpt-ost-20b",
-            messages=user_history[user_id]
-        )
-        bot_reply = response.choices[0].message.content
-        user_history[user_id].append({"role": "assistant", "content": bot_reply})
-
-        bot.reply_to(message, bot_reply)
-    except Exception as e:
-        bot.reply_to(message, f"Xatolik yuz berdi: {e}")
-
-# 3. Rasmlarni tahlil qilish (Vision AI)
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    global total_messages
-    unique_users.add(message.from_user.id)
-    total_messages += 1
-
-    try:
-        bot.send_chat_action(message.chat.id, 'typing')
-        file_info = bot.get_file(message.photo[-1].file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        base64_image = base64.b64encode(downloaded_file).decode('utf-8')
-        
-        caption = message.caption if message.caption else "Ushbu rasmni tahlil qiling va ta'riflab bering."
-
-        response = client.chat.completions.create(
-            model="openai/gpt-ost-20b",
+        chat_completion = groq_client.chat.completions.create(
             messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": caption},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                        }
-                    ]
-                }
-            ]
+                {"role": "system", "content": "Siz aqlli va dostona yordamchisiz.Siz foydalanuvchining savollariga aniq va tushunarli javob berasiz.javoblaringiz qisqa boladi, agar foydalanuvchi sizdan toliq javobini so'rasa,siz unga aniq malumotlar va misollar bilan tushuntirib berasiz."},
+                {"role": "user", "content": user_text}
+            ],
+            model="openai/gpt-oss-20b",
+            temperature=0.6,
         )
-        bot.reply_to(message, response.choices[0].message.content)
-    except Exception as e:
-        bot.reply_to(message, f"Rasmni tahlil qilishda xatolik: {e}")
 
-# 4. Ovozli xabar qabul qilish va ovozli javob qaytarish (STT va TTS)
-@bot.message_handler(content_types=['voice'])
-def handle_voice(message):
-    global total_messages
-    unique_users.add(message.from_user.id)
-    total_messages += 1
+        ai_response = chat_completion.choices[0].message.content
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=status_msg.message_id,
+            text=ai_response
+        )
+    except Exception as e:
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=status_msg.message_id,
+            text=f"❌xatolik turi:{e}"
+        )
+
+async def process_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    status_msg = await update.message.reply_text("🎙 Audio qabul qilindi. Matnga o'girilmoqda...")
+    file_path = "temp_voice.ogg"
 
     try:
-        bot.send_chat_action(message.chat.id, 'record_voice')
-        file_info = bot.get_file(message.voice.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        
-        voice_filename = "user_voice.ogg"
-        with open(voice_filename, 'wb') as f:
-            f.write(downloaded_file)
+        voice_or_audio = update.message.voice or update.message.audio
+        telegram_file = await context.bot.get_file(voice_or_audio.file_id)
+        await telegram_file.download_to_drive(file_path)
 
-        # Whisper audio modeli orqali ovozni matnga o'girish
-        with open(voice_filename, "rb") as audio_file:
-            transcription = client.audio.transcriptions.create(
-                model="whisper-large-v3-turbo",
-                file=audio_file,
+        with open(file_path, "rb") as audio_file:
+            transcription = groq_client.audio.transcriptions.create(
+                file=(file_path, audio_file.read()),
+                model="whisper-large-v3",
+                prompt="O'zbek tilidagi audio",
                 response_format="text"
             )
 
-        if os.path.exists(voice_filename):
-            os.remove(voice_filename)
+        transcribed_text = str(transcription).strip()
 
-        # AI matnli javob tayyorlaydi
-        response = client.chat.completions.create(
-            model="openai/gpt-ost-20b",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": transcription}
-            ]
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=status_msg.message_id,
+            text=f"📝 Matn:\n_{transcribed_text}_\n\n⚡ Tahlil qilinmoqda..."
         )
-        bot_reply = response.choices[0].message.content
 
-        # Javobni gTTS orqali audio faylga o'girib yuborish
-        tts = gTTS(text=bot_reply, lang='uz')
-        reply_voice_path = "reply_voice.ogg"
-        tts.save(reply_voice_path)
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": "Audio matnini tahlil qiling va asosiy mazmunini chiqarib bering."},
+                {"role": "user", "content": transcribed_text}
+            ],
+            model="openai/gpt-oss-20b",
+            temperature=0.6,
+        )
 
-        with open(reply_voice_path, 'rb') as voice:
-            bot.send_voice(message.chat.id, voice, caption=f"💬 **Tushunilgan matn:** {transcription}")
+        analysis = chat_completion.choices[0].message.content
+        final_text = f"🎯 Transkripsiya:\n{transcribed_text}\n\n📊 Tahlil:\n{analysis}"
 
-        if os.path.exists(reply_voice_path):
-            os.remove(reply_voice_path)
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=status_msg.message_id,
+            text=final_text
+        )
 
     except Exception as e:
-        bot.reply_to(message, f"Ovozli xabarni qayta ishlashda xatolik: {e}")
-
-if __name__ == "__main__":
-    bot.remove_webhook()
-    bot.infinity_polling(skip_pending=True)
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=status_msg.message_id,
+            text="❌ Audioni qayta ishlashda xatolik yuz berdi."
+        )
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+if __name__ == '__main__':
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, analyze_text))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, process_voice))
+    app.run_polling()

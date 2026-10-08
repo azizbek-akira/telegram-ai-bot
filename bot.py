@@ -4,6 +4,7 @@ from io import BytesIO
 import telebot
 from groq import Groq
 from gtts import gTTS
+from duckduckgo_search import DDGS
 
 # Environment o'zgaruvchilarini olish
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -12,7 +13,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 client = Groq(api_key=GROQ_API_KEY)
 
-# Global o'zgaruvchilar (Statistika va Suhbat xotirasi uchun)
+# Global o'zgaruvchilar
 user_history = {}
 unique_users = set()
 total_messages = 0
@@ -24,15 +25,27 @@ SYSTEM_PROMPT = (
     "va misollar bilan tushuntirib berasiz."
 )
 
+# Internetdan qidirish funksiyasi
+def search_web(query):
+    try:
+        results = DDGS().text(query, max_results=3)
+        if results:
+            context = "\n".join([f"- {r['title']}: {r['body']}" for r in results])
+            return context
+    except Exception as e:
+        print(f"Qidiruvda xatolik: {e}")
+    return None
+
 # -------------------------------------------------------------
-# 1. /start va /stats Buyruqlari (Statistika funksiyasi)
+# 1. /start va /stats Buyruqlari
 # -------------------------------------------------------------
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     unique_users.add(message.from_user.id)
     welcome_text = (
         "Salom! Men sizning aqlli yordamchingizman. 🤖\n\n"
-        "Menga matn yuborishingiz, rasm jo'natishingiz yoki ovozli xabar berishingiz mumkin!"
+        "Menga matn yuborishingiz, rasm jo'natishingiz, ovozli xabar berishingiz "
+        "yoki internetdan ma'lumot qidirishni so'rashingiz mumkin!"
     )
     bot.reply_to(message, welcome_text)
 
@@ -46,7 +59,7 @@ def show_stats(message):
     bot.reply_to(message, stats_text, parse_mode="Markdown")
 
 # -------------------------------------------------------------
-# 2. Matnli Xabarlar va Suhbat Xotirasi (Context Memory)
+# 2. Matnli Xabarlar va Internet Qidiruvi
 # -------------------------------------------------------------
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
@@ -57,13 +70,23 @@ def handle_text(message):
     unique_users.add(user_id)
     total_messages += 1
 
+    # Internetdan qidirish kerakligini aniqlash
+    search_keywords = ["qidir", "yangilik", "kim", "nima", "ob-havo", "kurs", "bugun", "internetdan"]
+    needs_search = any(keyword in user_text.lower() for keyword in search_keywords)
+
+    web_context = ""
+    if needs_search:
+        search_result = search_web(user_text)
+        if search_result:
+            web_context = f"\n\n[Internetdan topilgan ma'lumotlar]:\n{search_result}"
+
     # Foydalanuvchi xotirasini yaratish
     if user_id not in user_history:
         user_history[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    user_history[user_id].append({"role": "user", "content": user_text})
+    prompt_content = user_text + web_context
+    user_history[user_id].append({"role": "user", "content": prompt_content})
 
-    # Xotirani oxirgi 10 ta xabar bilan cheklash
     if len(user_history[user_id]) > 11:
         user_history[user_id] = [user_history[user_id][0]] + user_history[user_id][-10:]
 
@@ -124,7 +147,6 @@ def handle_voice(message):
     total_messages += 1
 
     try:
-        # Ovozli xabarni yuklab olish
         file_info = bot.get_file(message.voice.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
@@ -132,7 +154,6 @@ def handle_voice(message):
         with open(voice_filename, 'wb') as f:
             f.write(downloaded_file)
 
-        # Groq Whisper orqali ovozni matnga o'girish
         with open(voice_filename, "rb") as audio_file:
             transcription = client.audio.transcriptions.create(
                 model="whisper-large-v3",
@@ -143,7 +164,6 @@ def handle_voice(message):
         if os.path.exists(voice_filename):
             os.remove(voice_filename)
 
-        # Matnli javob tayyorlash
         response = client.chat.completions.create(
             model="openai/gpt-oss-20b",
             messages=[
@@ -153,7 +173,6 @@ def handle_voice(message):
         )
         bot_reply = response.choices[0].message.content
 
-        # Javobni gTTS orqali ovozga o'girib yuborish
         tts = gTTS(text=bot_reply, lang='uz')
         reply_voice_path = "reply_voice.ogg"
         tts.save(reply_voice_path)
@@ -169,4 +188,5 @@ def handle_voice(message):
 
 # Botni ishga tushirish
 if __name__ == "__main__":
-    bot.infinity_polling()
+    bot.remove_webhook()
+    bot.infinity_polling(skip_pending=True)
